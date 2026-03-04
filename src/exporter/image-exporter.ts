@@ -10,8 +10,15 @@ import { resolve, dirname, parse, format } from 'node:path';
 import { ensureDOMPolyfill } from './dom-polyfill.js';
 import type { ExcalidrawFile } from '../types/excalidraw.js';
 
-/** Native `console.error` captured at module load so concurrent calls cannot corrupt each other. */
+/** Native `console.error` captured at module load for safe restoration. */
 const NATIVE_CONSOLE_ERROR = console.error;
+
+/**
+ * Reference counter for concurrent console.error suppression.
+ * Only restores the native implementation when all active
+ * suppressions have completed (counter drops to zero).
+ */
+let suppressionDepth = 0;
 
 /**
  * Export options matching Excalidraw website capabilities
@@ -116,14 +123,14 @@ export async function convertToSVG(
     exportEmbedScene: opts.exportEmbedScene,
   };
 
-  // Suppress noisy @excalidraw/utils font/Path2D warnings during export.
-  // Uses the module-level NATIVE_CONSOLE_ERROR so concurrent calls don't
-  // capture each other's patched version.
-  console.error = (...args: unknown[]) => {
-    const msg = String(args[0] || '');
-    if (msg.includes('font-face') || msg.includes('Path2D')) return;
-    NATIVE_CONSOLE_ERROR.apply(console, args);
-  };
+  suppressionDepth++;
+  if (suppressionDepth === 1) {
+    console.error = (...args: unknown[]) => {
+      const msg = String(args[0] || '');
+      if (msg.includes('font-face') || msg.includes('Path2D')) return;
+      NATIVE_CONSOLE_ERROR.apply(console, args);
+    };
+  }
 
   try {
     const svg = await exportToSvg({
@@ -135,7 +142,10 @@ export async function convertToSVG(
 
     return svg.outerHTML;
   } finally {
-    console.error = NATIVE_CONSOLE_ERROR;
+    suppressionDepth--;
+    if (suppressionDepth === 0) {
+      console.error = NATIVE_CONSOLE_ERROR;
+    }
   }
 }
 
